@@ -1,0 +1,80 @@
+name: Build Release APK
+
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Save custom sources
+      run: |
+        cp -r lib /tmp/my_lib
+        cp pubspec.yaml /tmp/my_pubspec.yaml
+        mkdir -p /tmp/assets/icon
+        cp assets/icon/app_icon.png /tmp/assets/icon/app_icon.png
+
+    - name: Setup Flutter
+      uses: subosito/flutter-action@v2
+      with:
+        flutter-version: '3.24.0'
+
+    - name: Create Android project
+      run: flutter create --overwrite --org com.obanstudio --project-name kalendar .
+
+    - name: Patch Kotlin version
+      run: |
+        sed -i -E 's/id "org.jetbrains.kotlin.android" version ".*"/id "org.jetbrains.kotlin.android" version "1.9.24"/g' android/settings.gradle || true
+        sed -i -E 's/ext.kotlin_version = .*/ext.kotlin_version = "1.9.24"/g' android/build.gradle || true
+
+    - name: Restore custom sources
+      run: |
+        cp -r /tmp/my_lib/* lib/
+        cp /tmp/my_pubspec.yaml pubspec.yaml
+        mkdir -p assets/icon
+        cp /tmp/assets/icon/app_icon.png assets/icon/app_icon.png
+
+    - name: Decode Keystore
+      run: echo "${{ secrets.SIGNING_KEY }}" | base64 --decode > android/app/upload-keystore.jks
+
+    - name: Create key.properties
+      run: |
+        echo "storePassword=${{ secrets.KEY_STORE_PASSWORD }}" > android/key.properties
+        echo "keyPassword=${{ secrets.KEY_PASSWORD }}" >> android/key.properties
+        echo "keyAlias=${{ secrets.ALIAS }}" >> android/key.properties
+        echo "storeFile=upload-keystore.jks" >> android/key.properties
+
+    - name: Install dependencies
+      run: flutter pub get
+
+    - name: Generate App Icons
+      run: flutter pub run flutter_launcher_icons
+
+    - name: Configure AndroidManifest
+      run: |
+        sed -i 's/android:label=".*"/android:label="График Смен 2х2"/' android/app/src/main/AndroidManifest.xml
+        sed -i '/<application/i \    <uses-permission android:name="android.permission.INTERNET" />' android/app/src/main/AndroidManifest.xml
+        sed -i '/<manifest/a \    <queries>\n        <intent><action android:name="android.intent.action.VIEW" /><data android:scheme="https" /></intent>\n        <intent><action android:name="android.intent.action.VIEW" /><data android:scheme="mailto" /></intent>\n    </queries>' android/app/src/main/AndroidManifest.xml
+
+    - name: Configure signing in build.gradle
+      run: |
+        sed -i '/buildTypes {/i \    signingConfigs {\n        release {\n            keyAlias System.getenv("ALIAS")\n            keyPassword System.getenv("KEY_PASSWORD")\n            storeFile file("upload-keystore.jks")\n            storePassword System.getenv("KEY_STORE_PASSWORD")\n        }\n    }\n' android/app/build.gradle
+        sed -i 's/signingConfig signingConfigs.debug/signingConfig signingConfigs.release/' android/app/build.gradle
+
+    - name: Build Signed APK
+      run: flutter build apk --release
+      env:
+        ALIAS: ${{ secrets.ALIAS }}
+        KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
+        KEY_STORE_PASSWORD: ${{ secrets.KEY_STORE_PASSWORD }}
+
+    - name: Upload APK artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: kalendar-v1.0.0-signed
+        path: build/app/outputs/flutter-apk/app-release.apk
